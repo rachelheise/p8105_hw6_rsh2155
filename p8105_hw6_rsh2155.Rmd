@@ -7,21 +7,189 @@ output: github_document
 
 ```{r setup, include=FALSE}
 library(tidyverse)
+library(rvest)
+library(ggridges)
+library(viridis)
+library(modelr)
+
+knitr::opts_chunk$set(
+  fig.width = 7,
+  fig.asp = 0.6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "right"))
+
+options(
+  ggplot2.continuous.color = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_color_discrete = scale_color_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
 ```
 
 
 ## Problem 1
 
+```{r}
+homicide_df = 
+  read_csv("data/homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
+  mutate(
+    city_state = str_c(city, state, sep = ", "),
+    victim_age = as.numeric(victim_age),
+    resolution = case_when(
+      disposition == "Closed without arrest" ~ 0,
+      disposition == "Open/No arrest"        ~ 0,
+      disposition == "Closed by arrest"      ~ 1)
+  ) %>% 
+  filter(
+    victim_race %in% c("White", "Black"),
+    city_state != "Tulsa, AL") %>% 
+  select(city_state, resolution, victim_age, victim_race, victim_sex)
+```
 
 
+Starting with one city
 
+```{r}
+baltimore_df =
+  homicide_df %>% 
+  filter(city_state == "Baltimore, MD")
 
+glm(resolution ~ victim_age + victim_race + victim_sex,
+    data = baltimore_df,
+    family = binomial()) %>% 
+  broom::tidy() %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96*std.error),
+    CI_upper = exp(estimate + 1.96*std.error)
+  ) %>% 
+  select(term, OR, starts_with("CI")) %>% 
+  knitr::kable(digits = 3)
+```
+
+Try this across cities
+
+```{r}
+models_results_df = 
+  homicide_df %>% 
+  nest(data = -city_state) %>% 
+  mutate(
+    models = 
+      map(.x = data, ~glm(resolution ~ victim_age + victim_race + victim_sex, data = .x, family = binomial())),
+    results = map(models, broom::tidy)
+  ) %>% 
+  select(city_state, results) %>% 
+  unnest(results) %>% 
+  mutate(
+    OR = exp(estimate),
+    CI_lower = exp(estimate - 1.96 * std.error),
+    CI_upper = exp(estimate + 1.96 * std.error)
+  ) %>% 
+  select(city_state, term, OR, starts_with("CI")) 
+```
+
+```{r}
+models_results_df %>% 
+  filter(term == "victim_sexMale") %>% 
+  mutate(city_state = fct_reorder(city_state, OR)) %>% 
+  ggplot(aes(x = city_state, y = OR)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
 
 
 
 ## Problem 2
 
+Build 3 models (choose one of your own). Compare them using cross-validation. 
 
+```{r}
+baby_df =
+  read_csv("./data/birthweight.csv") %>% 
+  mutate(babysex = as.factor(babysex),
+         frace = as.factor(frace),
+         malform = as.factor(malform),
+         mrace = as.factor(mrace),
+         babysex = recode(babysex, `1` = "male", `2` = "female"),
+         frace = recode(frace, `1` = "White", `2` = "Black", `3` = "Asian", `4` = "Puerto Rican", `8` = "Other", `9` = "Unknown"),
+         malform = recode(malform, `0` = "absent", `1` = "present"),
+         mrace = recode(mrace, `1` = "White", `2` = "Black", `3` = "Asian", `4` = "Puerto Rican", `8` = "Other")) 
+  
+pairs(~bwt + blength + gaweeks, data = baby_df, main = "Name")
+
+```
+Fit a model
+Look at residuals - does it look symmetrical? Any outliers? Any trends (parabolas)?
+
+```{r}
+my_model = lm(bwt ~ blength + gaweeks + mrace, data = baby_df)
+my_model
+
+baby_df %>% 
+  modelr::add_residuals(my_model) %>% 
+  modelr::add_predictions(my_model) %>% 
+  ggplot(aes(x = resid, y = pred)) +
+  geom_point() +
+  labs(
+    x = "Residuals",
+    y = "Fitted Values",
+    title = "Residuals vs. Fitted Values"
+  )
+
+baby_df %>% 
+  modelr::add_residuals(my_model) %>% 
+  ggplot(aes(x = gaweeks, y = resid)) +
+  geom_point()
+
+```
+
+
+```{r, eval = FALSE}
+model_fit1 = lm(bwt ~ gaweeks, data = baby_df) %>% broom::tidy()
+model_fit2 = lm(bwt ~ (bhead + blength + babysex)^3, data = baby_df) %>% broom::tidy()
+```
+
+
+```{r}
+cv_df = crossv_mc(baby_df, 100)
+
+cv_df = 
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+
+cv_df = 
+  cv_df %>% 
+  mutate(
+    my_mod = map(train, ~lm(bwt ~ blength + gaweeks + mrace, data = .x)),
+    compar_mod1 = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    compar_mod2 = map(train, ~lm(bwt ~ (bhead + blength + babysex)^3, data = .x))
+  ) %>% 
+  mutate(
+    rmse_my_mod = map2_dbl(my_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_compar1 = map2_dbl(compar_mod1, test, ~rmse(model = .x, data = .y)),
+    rmse_compar2 = map2_dbl(compar_mod2, test, ~rmse(model = .x, data = .y)))
+
+
+cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin()
+
+```
 
 
 
@@ -44,5 +212,13 @@ weather_df =
     tmax = tmax / 10) %>%
   select(name, id, everything())
 ```
+
+Fit a model to data set. Make sure you can compute adjusted R^2 and log (B0B1). Use broom::glance(). Get your estimated coefficients and rearrange with intercept and slope next to each other. Then do bootstrap method
+
+
+
+
+
+
 
 
