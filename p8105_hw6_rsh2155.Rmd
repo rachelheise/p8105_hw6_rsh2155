@@ -27,12 +27,14 @@ options(
 
 scale_color_discrete = scale_color_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
+
+set.seed(1)
 ```
 
 
 ## Problem 1
 
-```{r}
+```{r, message = FALSE}
 homicide_df = 
   read_csv("data/homicide-data.csv", na = c("", "NA", "Unknown")) %>% 
   mutate(
@@ -98,16 +100,17 @@ models_results_df %>%
   ggplot(aes(x = city_state, y = OR)) +
   geom_point() +
   geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper)) +
-  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  labs(title = "Odds Ratio by City")
 ```
 
 
 
 ## Problem 2
 
-Build 3 models (choose one of your own). Compare them using cross-validation. 
+Build 3 models and compare them using cross-validation. 
 
-```{r}
+```{r, message = FALSE}
 baby_df =
   read_csv("./data/birthweight.csv") %>% 
   mutate(babysex = as.factor(babysex),
@@ -119,16 +122,18 @@ baby_df =
          malform = recode(malform, `0` = "absent", `1` = "present"),
          mrace = recode(mrace, `1` = "White", `2` = "Black", `3` = "Asian", `4` = "Puerto Rican", `8` = "Other")) 
   
-pairs(~bwt + blength + gaweeks, data = baby_df, main = "Name")
-
+pairs(~bwt + blength + gaweeks + delwt + fincome, data = baby_df, main = "Scatterplot Matrix for Baby Data")
 ```
-Fit a model
-Look at residuals - does it look symmetrical? Any outliers? Any trends (parabolas)?
+
+To create my model, I looked at a scatterplot matrix with hypothesized variables that could help predict birthweight, to get an understanding of what the relationship between possible predictors and the response might be. From this plot and hypotheses about the relationships between variables, I decided to include baby's length at birth, mother's race, and mother's weight at delivery.
 
 ```{r}
-my_model = lm(bwt ~ blength + gaweeks + mrace, data = baby_df)
-my_model
+my_model = lm(bwt ~ blength + mrace + delwt, data = baby_df)
+summary(my_model)
+```
 
+Plot residuals vs. fitted values for my model.
+```{r}
 baby_df %>% 
   modelr::add_residuals(my_model) %>% 
   modelr::add_predictions(my_model) %>% 
@@ -140,16 +145,11 @@ baby_df %>%
     title = "Residuals vs. Fitted Values"
   )
 
-baby_df %>% 
-  modelr::add_residuals(my_model) %>% 
-  ggplot(aes(x = gaweeks, y = resid)) +
-  geom_point()
-
 ```
 
-
+Fit two comparison models.
 ```{r, eval = FALSE}
-model_fit1 = lm(bwt ~ gaweeks, data = baby_df) %>% broom::tidy()
+model_fit1 = lm(bwt ~ blength + gaweeks, data = baby_df) %>% broom::tidy()
 model_fit2 = lm(bwt ~ (bhead + blength + babysex)^3, data = baby_df) %>% broom::tidy()
 ```
 
@@ -187,14 +187,14 @@ cv_df %>%
     names_prefix = "rmse_") %>% 
   mutate(model = fct_inorder(model)) %>% 
   ggplot(aes(x = model, y = rmse)) +
-  geom_violin()
+  geom_violin() +
+  labs(title = "Violin Plot of Cross-Validation RMSE",
+       x = "Model",
+       y = "RMSE")
 
 ```
 
-
-
-
-
+The second comparison model, with predictors head circumference, length, sex, and all their interactions, has the overall lowest RMSE values. My model fared only slightly better than the first comparison model.
 
 
 ## Problem 3
@@ -213,12 +213,84 @@ weather_df =
   select(name, id, everything())
 ```
 
+```{r}
+weather_lm = weather_df %>% 
+  lm(tmax ~ tmin, data = .) %>% 
+  broom::tidy()
+
+weather_lm
+
+B0 = pull(weather_lm %>% 
+  filter(term == "(Intercept)"), estimate)
+
+B1 = pull(weather_lm %>% 
+       filter(term == "tmin"), estimate)
+
+
+log(B0 * B1)
+
+pull(weather_df %>% 
+  lm(tmax ~ tmin, data = .) %>% 
+  broom::glance(), r.squared)
+
+```
+Create linear models for 5000 bootstraps and calculate R squared and log(B0*B1) values.
+
+```{r, cache = TRUE, warning = FALSE}
+weather_boot = weather_df %>% 
+  bootstrap(5000, id = "strap_number") %>% 
+  mutate(
+    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy),
+    result_desc = map(models, broom::glance)
+  ) %>% 
+  unnest(result_desc,
+         results) %>% 
+  select(strap_number, term, estimate, r.squared) %>% 
+  pivot_wider(
+    names_from = "term",
+    values_from = "estimate"
+  ) %>% 
+  rename(intercept = "(Intercept)") %>% 
+  mutate(log_est = log(intercept*tmin))
+```
+
+Find the estimate for 
+```{r, cache = TRUE, warning = FALSE}
+mean(weather_boot$log_est)
+mean(weather_boot$r.squared)
+```
+
+Create histogram of log(B0*B1) values.
+```{r, warning = FALSE}
+weather_boot %>% 
+  ggplot(aes(x = log_est)) +
+  geom_histogram(color = "black", fill = "white") +
+  labs(title = "Distribution of log(B0*B1) Estimates",
+       x = "log(B0*B1)",
+       y = "Count")
+```
+
+Create histogram of r squared values.
+```{r}
+weather_boot %>% 
+  ggplot(aes(x = r.squared)) +
+  geom_histogram(color = "black", fill = "white") +
+  labs(title = "Distribution of R Squared Estimates")
+```
+
+
 Fit a model to data set. Make sure you can compute adjusted R^2 and log (B0B1). Use broom::glance(). Get your estimated coefficients and rearrange with intercept and slope next to each other. Then do bootstrap method
 
 
 
+Find quantiles
 
-
+```{r}
+quantile(weather_boot$r.squared, c(0.025, 0.5, 0.975))
+quantile(weather_boot$log_est, c(0.025, 0.5, 0.975))
+```
+The 95% confidence interval for R squared is (0.8937, 9275) and for log(B0*B1) it is (1.9669, 2.0585).
 
 
 
